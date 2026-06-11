@@ -1,0 +1,484 @@
+Great! Since everything is working now, let's walk through the architecture of your Hydro SCADA Dashboard and explain the purpose of each file and how data flows through the system.
+
+Overall Architecture
+MainWindow
+    │
+    ▼
+MainDashboardViewModel
+    │
+    ▼
+TrendCardViewModel (One per Tag)
+    │
+    ├── ScadaTag
+    │
+    ├── ChartSeriesViewModel
+    │
+    └── RenderableSeries
+            │
+            ▼
+       SciChart Surface
+1. ScadaTag.cs
+Purpose
+
+Represents a single SCADA signal/tag.
+
+Example:
+
+TANK_LEVEL
+MOTOR_CURRENT
+FLOW_RATE
+PRESSURE
+
+Contains:
+
+Id
+DisplayName
+CurrentValue
+Unit
+MinValue
+MaxValue
+AxisTitle
+ComponentType
+
+Example:
+
+Id = "LT101"
+DisplayName = "Tank Level"
+Unit = "%"
+MinValue = 0
+MaxValue = 100
+
+Think of it as:
+
+"Configuration + Current Value of a field device"
+
+2. MainDashboardViewModel.cs
+Purpose
+
+Manages all trend cards visible on the dashboard.
+
+Contains:
+
+ObservableCollection<TrendCardViewModel>
+
+Example:
+
+Tank Level Card
+Pump Pressure Card
+Flow Meter Card
+
+Stored in:
+
+ActiveTags
+
+When user adds a tag:
+
+ActiveTags.Add(card);
+
+UI updates automatically.
+
+3. TrendCardViewModel.cs
+Purpose
+
+Represents one trend chart card.
+
+Example:
+
++-------------------+
+| Tank Level        |
+|                   |
+|      Chart        |
+|                   |
++-------------------+
+
+Each card owns:
+
+Tag
+Series
+RenderableSeries
+YVisibleRange
+Annotations
+Tag
+public ScadaTag Tag
+
+Stores:
+
+LT101
+Tank Level
+0-100%
+Series
+ObservableCollection<ChartSeriesViewModel>
+
+Stores chart data.
+
+Example:
+
+Actual
+Target
+Average
+Limit
+RenderableSeries
+ObservableCollection<IRenderableSeries>
+
+Stores visual chart objects.
+
+Example:
+
+FastLineRenderableSeries
+FastMountainRenderableSeries
+
+SciChart reads this collection and draws lines.
+
+4. ChartSeriesViewModel.cs
+Purpose
+
+Stores actual chart points.
+
+Example:
+
+Actual
+Target
+Average
+
+Contains:
+
+SeriesName
+Offset
+DataSeries
+DataSeries
+
+Most important property.
+
+XyDataSeries<DateTime,double>
+
+Stores:
+
+Time              Value
+-----------------------
+10:00:00          50
+10:00:01          51
+10:00:02          53
+
+Every trend line owns one DataSeries.
+
+Append
+
+Called continuously.
+
+series.Append(
+    DateTime.Now,
+    value);
+
+Adds new point to graph.
+
+5. MainWindow.xaml
+Purpose
+
+Dashboard UI.
+
+Contains:
+
+Add Tag Area
+
+Tag ID
+Name
+Unit
+Min
+Max
+
+[ADD]
+
+And:
+
+ItemsControl
+
+Which displays:
+
+TrendCard1
+TrendCard2
+TrendCard3
+
+using:
+
+DynamicMetricCard
+6. MainWindow.xaml.cs
+Purpose
+
+Main application controller.
+
+Constructor
+
+Runs on startup.
+
+public MainWindow()
+
+Loads:
+
+DatabaseService.LoadTagConfigurations()
+
+Creates:
+
+TrendCardViewModel
+
+Adds default series:
+
+Actual
+Target
+Average
+Limit
+
+Starts:
+
+_simulationTimer
+SimulationLoop_Tick()
+
+Heart of live data generation.
+
+Runs every:
+
+400ms
+
+For each tag:
+
+Generate value
+
+Example:
+
+49
+50
+51
+48
+52
+
+Appends to every series:
+
+Actual
+Target
+Average
+Limit
+BtnAdd_Click()
+
+Creates new tag.
+
+Example:
+
+Tag ID = LT101
+Name = Tank Level
+
+Creates:
+
+ScadaTag
+
+Then:
+
+TrendCardViewModel
+
+Then:
+
+ActiveTags.Add()
+
+Card appears immediately.
+
+7. DynamicMetricCard.xaml
+Purpose
+
+Visual appearance of each chart card.
+
+Contains:
+
+Header
+Current Value
+Buttons
+SciChart
+Statistics
+DataContext
+
+Receives:
+
+TrendCardViewModel
+
+Everything binds to it.
+
+Example:
+
+{Binding Tag.DisplayName}
+
+shows:
+
+Tank Level
+SciChartSurface
+
+Actual graph.
+
+Bound to:
+
+RenderableSeries="{Binding RenderableSeries}"
+
+This was the major change that enabled dynamic series.
+
+8. DynamicMetricCard.xaml.cs
+Purpose
+
+Card logic.
+
+Handles:
+
+Zoom
+Cursor
+Export
+Live mode
+Context menu
+
+Everything related to a single chart.
+
+9. DatabaseService.cs
+Purpose
+
+Communication with PostgreSQL.
+
+SaveTagConfiguration()
+
+Stores tag configuration.
+
+LT101
+Tank Level
+0-100
+
+Table:
+
+scada_tags
+LoadTagConfigurations()
+
+Loads tags during startup.
+
+DeleteTagConfiguration()
+
+Deletes tag.
+
+LogTelemetry()
+
+Stores live values.
+
+Table:
+
+telemetry_history
+
+Example:
+
+LT101
+2026-06-11 10:00:00
+52.1
+FetchHistoricalTelemetry()
+
+Loads historical data.
+
+Used by:
+
+BtnLoadHistory_Click()
+
+Returns:
+
+Timestamp
+Value
+
+for selected period.
+
+10. ConfigurationService.cs
+Purpose
+
+Stores dashboard layout in JSON.
+
+File:
+
+HydroDashboardLayout.json
+
+Saves:
+
+Tag configurations
+
+Loads:
+
+Tag configurations
+
+when app starts.
+
+11. TelemetryProcessor.cs
+Purpose
+
+Central data processing engine.
+
+Currently:
+
+tag.CurrentValue = value;
+series.Append(...);
+
+Later you can add:
+
+Scaling
+Filtering
+Alarm checks
+Engineering units conversion
+Validation
+
+without changing the UI.
+
+Live Data Flow
+DispatcherTimer
+      │
+      ▼
+SimulationLoop_Tick
+      │
+      ▼
+Generate Value
+      │
+      ▼
+ChartSeriesViewModel.Append()
+      │
+      ▼
+XyDataSeries
+      │
+      ▼
+RenderableSeries
+      │
+      ▼
+SciChartSurface
+      │
+      ▼
+Chart Updates
+Historical Data Flow
+User Selects Date
+      │
+      ▼
+BtnLoadHistory_Click
+      │
+      ▼
+DatabaseService.FetchHistoricalTelemetry
+      │
+      ▼
+PostgreSQL
+      │
+      ▼
+DataSeries.Clear()
+      │
+      ▼
+DataSeries.Append()
+      │
+      ▼
+SciChart Refresh
+      │
+      ▼
+History Displayed
+What You Have Built
+
+You now have a mini industrial SCADA historian system consisting of:
+
+✅ Dynamic tag creation
+✅ Dynamic multi-series trend charts
+✅ PostgreSQL historian database
+✅ Historical playback engine
+✅ Live simulation engine
+✅ Dynamic SciChart rendering
+✅ Theme switching
+✅ JSON layout persistence
+✅ MVVM architecture
+✅ Expandable series architecture
