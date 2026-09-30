@@ -1,0 +1,181 @@
+This implementation plan is an architecture for industrial remote monitoring. It solves a classic engineering dilemma: how to give mobile users real-time access to operational data residing inside isolated plant networks without exposing those plants to cyber threats.
+
+1. Executive Summary: What, Why, and How
+   ┌─────────────────────────────────────────────────────────────────────────────┐
+   │                                 WHAT WE ARE BUILDING                         │
+   │  A central cloud platform that bridges Plant PCs (SCADA/PostgreSQL) to a     │
+   │  mobile React PWA so engineers and management can securely view live tag     │
+   │  values, alarms, and history anywhere without touching plant controls.       │
+   └─────────────────────────────────────────────────────────────────────────────┘
+                                          │
+                      ┌───────────────────┴───────────────────┐
+                      ▼                                       ▼
+   ┌──────────────────────────────────────┐─┐ ┌──────────────────────────────────────┐
+   │          WHY THIS ARCHITECTURE?        │ │ │          HOW WE DO IT (THE CORE)     │
+   │ • Zero open inbound ports at plants  │ │ │ 1. Outbound Cloudflare Tunnels per site│
+   │ • Zero-Trust Machine Authentication  │ │ │ 2. Central AWS ASP.NET Core Gateway  │
+   │ • Single API hub for multi-tenant mobile│ │ │ 3. AWS Cognito + DynamoDB RBAC Rules │
+   │ • Read-Only isolation (SCADA stays local)│ │ 4. Local Site API over Plant Postgres│
+   └──────────────────────────────────────┘ │ └──────────────────────────────────────┘
+     ───────────────────────────────────────┘
+2. Deep Dive: Component Breakdown
+A. Plant Level (Inside the Factory Network)
+Each plant PC runs local SCADA/iNDUS services and a PostgreSQL database.
+
+What we add:
+
+Indus.RemoteMonitoring.Api: A lightweight, read-only adapter service listening only on loopback (127.0.0.1:7000). It queries the local PostgreSQL DB for trends/events and reads live tags from the local cache.
+
+cloudflared Service: An outbound tunnel connector.
+
+Why:
+
+Air-gapping SCADA: The API only allows Read operations. It is physically impossible to issue a breaker trip or setpoint change from the mobile app because those write routes do not exist.
+
+Loopback Binding: Listening on 127.0.0.1 ensures that even local network devices cannot hit this API directly without local authorization.
+
+       [ Local Plant PC ]
+       ┌────────────────────────────────────────────────────────┐
+       │ PostgreSQL DB  ──(Read-Only SQL)──┐                    │
+       │                                   ▼                    │
+       │ Local SCADA Service ─(Live Cache)─► Site Monitoring API│
+       │                                         ▲              │
+       │                                         │ (localhost)  │
+       │                                   [cloudflared] ───────┼───► (Outbound Encrypted Tunnel)
+       └────────────────────────────────────────────────────────┘
+B. Security & Transport (Cloudflare Tunnel + Zero Trust)
+What we are doing:
+We establish outbound TLS tunnels on port 7844 from each plant PC to Cloudflare's edge, assigning each site a unique URL (e.g., site101-api.indusautomation.com). We protect this URL using Cloudflare Access Service Auth.
+
+Why:
+
+No Inbound Open Ports: Standard remote access requires forwarding ports (like 5432 or 80/443) on the plant router, exposing the network to port scanners and brute-force attacks. Cloudflare Tunnels initiate outbound connections only—the plant router blocks all incoming connections.
+
+Service Tokens: Mobile phones never communicate directly with the site tunnel URL. Only the central AWS Gateway holds the CF-Access-Client-Id and CF-Access-Client-Secret to bypass the Zero Trust firewall.
+
+C. Central Cloud Hub (AWS Gateway & Data Layer)
+This is the single entry point for all mobile users ([https://api.indusautomation.com](https://api.indusautomation.com)).
+
+                            ┌──────────────────────────────────┐
+                            │      Amazon Cognito              │
+                            │ (User Identity & Tokens)         │
+                            └────────────────┬─────────────────┘
+                                             │ Bearer Token
+                                             ▼
+┌───────────────────┐    REST / WS   ┌──────────────────────────────────┐
+│ React Mobile App  │ ─────────────► │    AWS CloudGateway              │
+│ (PWA)             │                │    (ASP.NET Core / SignalR)     │
+└───────────────────┘                └────────────────┬─────────────────┘
+                                                      │ Validates Permissions
+                                                      ▼
+                                     ┌──────────────────────────────────┐
+                                     │    DynamoDB                      │
+                                     │ (Users, Sites, Grants, Audit)    │
+                                     └──────────────────────────────────┘
+Components & Roles:
+
+AWS Cognito: Handles authentication, password hashing, MFA, and issuance of JWT Access Tokens.
+
+DynamoDB: Stores multi-tenant metadata—Customers, Sites, User Grants (e.g., "User A can read Site 101, but not Site 102"), and Audit Logs.
+
+AWS Gateway (Indus.CloudGateway): An ASP.NET Core application hosted on EC2/ECS. It validates user JWTs against DynamoDB permissions and proxies authorized requests through the correct site tunnel.
+
+Why:
+
+Decoupling: Mobile clients do not need to know where plants are or how to connect to them. They talk to one gateway.
+
+Centralized Revocation: If an operator is terminated, disabling them in DynamoDB immediately blocks access across all 50 plants, even if their site tunnel credentials remain active.
+
+D. User Interface (React Mobile PWA)
+What we are doing:
+Building a responsive React web application optimized for mobile screen sizes, hosted cheaply on AWS S3 and served globally via CloudFront CDN.
+
+Why:
+
+PWA vs Native: Avoids Apple App Store / Google Play Store approval cycles and cross-platform native maintenance. It can be saved to a mobile home screen like an app.
+
+Zero Secrets in Frontend: The React app contains zero Cloudflare keys, zero database credentials, and zero internal plant URLs. It only holds the user's short-lived JWT token.
+
+3. Data Flow Deep Dives
+Deep Dive 1: Real-Time Live Tag Streaming
+How a phone displays a live updating motor speed (e.g., 99.98 %) without crushing plant hardware.
+
+[Mobile Browser]          [AWS Gateway]           [Site 101 API]        [Local SCADA]
+       │                        │                        │                    │
+       ├─ WebSocket Subscribe ─►│                        │                    │
+       │  (Site 101, Tags)      ├─ Check DynamoDB Grant  │                    │
+       │                        │  (User -> Site 101?)   │                    │
+       │                        │ ── Authenticated ──►   │                    │
+       │                        ├─ Open Shared Tunnel ──►│                    │
+       │                        │  Connection            ├─ Read Live Cache ─►│
+       │                        │                        │◄─ Current Values ──┘
+       │                        │◄── Batch Delta Stream ─┤
+       │◄── SignalR Fan-Out ────┤    (Every 250-1000ms)  │
+Multiplexing / Fan-out: If 10 engineers are viewing Site 101 on their phones, the AWS Gateway opens one single connection to Site 101's plant PC. It then duplicates (fans out) those updates to all 10 phones, preventing 10 separate connections from overwhelming local plant memory.
+
+Coalescing: High-frequency tags are batched into 250ms–1000ms intervals. If a temperature sensor updates 50 times a second, the gateway sends only the latest value once per interval to conserve mobile data.
+
+Deep Dive 2: Historical Trend Querying
+How an engineer views a 24-hour graph of temperature data.
+
+[Mobile App]              [AWS Gateway]            [Site 101 API]      [PostgreSQL DB]
+     │                          │                        │                    │
+     ├── GET /sites/101/trends ─►│                        │                    │
+     │   ?range=24h&tag=TEMP1   ├─ Verify Authorization  │                    │
+     │                          ├─ Proxy over Tunnel ───►│                    │
+     │                          │  (With Service Token)  ├── Downsampled SQL ─►│
+     │                          │                        │   Query            │
+     │                          │                        │◄─ 500 Data Points ─┘
+     │◄── JSON Chart Data ──────┼◄── Return Stream ──────┘
+Downsampling at the Source: Querying 24 hours of raw 1-second data yields 86,400 rows. Sending 86,400 raw points to a phone will crash the browser UI. The local Site API downsamples the data in SQL (e.g., returning min/max/average over 5-minute buckets) so only ~300–500 points travel across the network.
+
+Strict Time Bounds: Every query must enforce UTC start/end times and maximum sample limits to prevent memory exhaustion attacks.
+
+4. End-to-End Security Model
+       MOBILE APP                       AWS CLOUD EDGE                     PLANT NETWORK
+  ┌───────────────────┐             ┌────────────────────┐            ┌────────────────────┐
+  │  Bearer JWT Token │ ──────────► │ Token Verification │            │  Outbound-Only     │
+  │  (Identity & Role)│             │ Authorization RBAC │            │  TLS Tunnel        │
+  └───────────────────┘             └─────────┬──────────┘            └─────────▲──────────┘
+                                              │                                 │
+                                              │ Service Token                   │
+                                              └─────────────────────────────────┘
+                                              Cloudflare Access Header Validation
+Authentication (Who are you?): Managed by AWS Cognito. Users enter credentials and complete MFA. Cognito issues a short-lived OAuth2 Access Token.
+
+Authorization (What can you see?): Managed by AWS Gateway + DynamoDB. Every request checks: Does User X have an active grant for Site Y? If no, access is denied.
+
+Machine Authentication (Is this caller allowed to hit the plant?): Managed by Cloudflare Access. The plant's tunnel rejects any request missing the valid CF-Access-Client-Id header secret generated by Cloudflare and stored in AWS Secrets Manager.
+
+5. Step-by-Step Implementation Roadmap
+PHASE 1: Pilot
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ 1. Build `Indus.RemoteMonitoring.Api` on Plant PC bound to `127.0.0.1:7000`.    │
+│ 2. Install `cloudflared` service on Plant PC; establish named tunnel.           │
+│ 3. Create Cloudflare Access Service Token policy for `site101-api.domain.com`.   │
+│ 4. Deploy 1 ASP.NET Core Gateway on AWS EC2 & connect Cognito + DynamoDB.       │
+│ 5. Validate REST call from phone -> AWS Gateway -> Tunnel -> Plant API -> DB.   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                       │
+                                       ▼
+PHASE 2: Hardening & UI
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ 1. Build React Mobile Dashboard (PWA) with SignalR client.                      │
+│ 2. Implement Admin Web Portal for Customer, Site, User, and Grant management.   │
+│ 3. Enable AWS CloudWatch logging and strict alert thresholds.                   │
+│ 4. Implement downsampled SQL queries for history and down-state fallback logic. │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                       │
+                                       ▼
+PHASE 3: High Availability (Production Scale)
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ 1. Move AWS Gateway from single EC2 to ECS/Fargate container tasks behind ALB.  │
+│ 2. Add Redis Backplane to AWS Gateway to support multi-instance SignalR scaling.│
+│ 3. Enable DynamoDB Point-in-Time Recovery (PITR) and automated backup rules.     │
+└─────────────────────────────────────────────────────────────────────────────────┘
+6. Key Takeaways & Rules to Remember
+SCADA Isolation: Remote write capability is intentionally omitted from Release 1 to prevent unauthorized control actions.
+
+Database Integrity: DynamoDB handles central application metadata (users/permissions). Raw plant tag history stays in local PostgreSQL databases at each site.
+
+Fail-Closed Security: If the metadata database is unreachable or a user's token expires, the gateway defaults to blocking all requests. Local plant operations remain unaffected if internet connectivity drops.
