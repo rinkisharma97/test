@@ -1,0 +1,346 @@
+Here is the complete, clean setup to convert your project indus-view entirely to JavaScript / .jsx from scratch.
+
+Step 1: Terminal Commands (Clean Dependencies)
+Run these commands inside your project terminal (D:\Programs\React\Monitoring Dashbord\indus-view):
+
+Bash
+# 1. Install Axios, Recharts, and Lucide Icons
+npm install axios recharts lucide-react
+
+# 2. Start the dev server
+npm run dev
+Step 2: Delete TypeScript Config Files
+In your VS Code file explorer, delete these 3 files if they exist in the root directory (they were created by the TypeScript template):
+
+❌ tsconfig.json
+
+❌ tsconfig.app.json
+
+❌ tsconfig.node.json
+
+Step 3: index.html (Root Directory)
+Replace the contents of index.html in the root directory:
+
+HTML
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>iNDUS Plant Monitor</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+Step 4: vite.config.js (Root Directory)
+Rename your vite.config.ts file to vite.config.js and paste this content:
+
+JavaScript
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 3000,
+    strictPort: true,
+  }
+})
+Step 5: src/api.js (API Service)
+Create a new file src/api.js:
+
+JavaScript
+import axios from 'axios';
+
+// Pointing to your ASP.NET Core API running on port 5000
+const API_BASE_URL = 'http://localhost:5000/api/plant';
+
+// Fetch current live tag readings from PostgreSQL via C# API
+export const fetchLiveReadings = async () => {
+  const response = await axios.get(`${API_BASE_URL}/live`);
+  return response.data;
+};
+
+// Fetch 24-hour historical telemetry trend points
+export const fetchTagHistory = async (tagId, hours = 24) => {
+  const response = await axios.get(`${API_BASE_URL}/history`, {
+    params: { tagId, hours }
+  });
+  return response.data;
+};
+Step 6: src/App.css (Mobile Dashboard Styles)
+Replace src/App.css with this mobile-responsive layout:
+
+CSS
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+body {
+  background-color: #0f172a;
+  color: #f8fafc;
+}
+
+.dashboard-container {
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100vh;
+  background: #1e293b;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+}
+
+.header {
+  background: #0f172a;
+  padding: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #334155;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header h1 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.badge-live {
+  background: #22c55e;
+  color: #052e16;
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-weight: bold;
+}
+
+.content {
+  padding: 16px;
+  flex: 1;
+}
+
+.section-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #94a3b8;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tag-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tag-card {
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 14px;
+  background: #0f172a;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tag-card:active {
+  transform: scale(0.98);
+}
+
+.tag-card.active {
+  border-color: #3b82f6;
+  background: #1e293b;
+}
+
+.tag-top-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
+.tag-val-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.tag-val {
+  font-size: 1.8rem;
+  font-weight: bold;
+  color: #f8fafc;
+}
+
+.tag-unit {
+  font-size: 0.9rem;
+  color: #94a3b8;
+}
+
+.chart-card {
+  margin-top: 24px;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 14px;
+  background: #0f172a;
+}
+
+.chart-header {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: #cbd5e1;
+}
+Step 7: src/App.jsx (Single-Page Dashboard Component)
+Replace src/App.jsx (and delete src/App.tsx if it exists):
+
+JavaScript
+import { useEffect, useState } from 'react';
+import { fetchLiveReadings, fetchTagHistory } from './api';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { Activity } from 'lucide-react';
+import './App.css';
+
+export default function App() {
+  const [liveTags, setLiveTags] = useState([]);
+  const [selectedTag, setSelectedTag] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Fetch live telemetry data
+  const loadLiveData = async () => {
+    try {
+      const data = await fetchLiveReadings();
+      setLiveTags(data);
+      if (!selectedTag && data.length > 0) {
+        setSelectedTag(data[0].tagId);
+      }
+    } catch (err) {
+      console.error('Error fetching live data:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Refresh live tags every 3 seconds
+  useEffect(() => {
+    loadLiveData();
+    const interval = setInterval(loadLiveData, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Fetch 24h trend history when tag card is clicked
+  useEffect(() => {
+    if (selectedTag) {
+      fetchTagHistory(selectedTag, 24)
+        .then(setHistory)
+        .catch(console.error);
+    }
+  }, [selectedTag]);
+
+  return (
+    <div className="dashboard-container">
+      <header className="header">
+        <div className="header-title">
+          <Activity size={20} color="#22c55e" />
+          <h1>iNDUS Plant Monitor</h1>
+        </div>
+        <span className="badge-live">LIVE</span>
+      </header>
+
+      <main className="content">
+        {loading ? (
+          <p style={{ textAlign: 'center', marginTop: '30px', color: '#94a3b8' }}>
+            Connecting to PostgreSQL API...
+          </p>
+        ) : (
+          <>
+            <div className="section-label">Active Plant Tags</div>
+
+            <div className="tag-grid">
+              {liveTags.map((tag) => (
+                <div
+                  key={tag.tagId}
+                  className={`tag-card ${selectedTag === tag.tagId ? 'active' : ''}`}
+                  onClick={() => setSelectedTag(tag.tagId)}
+                >
+                  <div className="tag-top-row">
+                    <span>{tag.tagName}</span>
+                    <span style={{ color: tag.quality === 'Good' ? '#22c55e' : '#ef4444' }}>
+                      {tag.quality}
+                    </span>
+                  </div>
+                  <div className="tag-val-row">
+                    <span className="tag-val">{tag.val}</span>
+                    <span className="tag-unit">{tag.unit}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {selectedTag && history.length > 0 && (
+              <div className="chart-card">
+                <div className="chart-header">24h History: {selectedTag}</div>
+                <div style={{ width: '100%', height: 200 }}>
+                  <ResponsiveContainer>
+                    <LineChart data={history}>
+                      <XAxis
+                        dataKey="timestamp"
+                        stroke="#64748b"
+                        tickFormatter={(str) =>
+                          new Date(str).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                        }
+                      />
+                      <YAxis stroke="#64748b" domain={['auto', 'auto']} />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc' }}
+                        labelFormatter={(str) => new Date(str).toLocaleString()}
+                        formatter={(val) => [val, 'Value']}
+                      />
+                      <Line type="monotone" dataKey="val" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
+Step 8: src/main.jsx (Application Entry)
+Create/replace src/main.jsx (and delete src/main.tsx if present):
+
+JavaScript
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.jsx'
+import './index.css'
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)
+Run and Test
+Make sure your C# API is running: dotnet run (on port 5000).
+
+Run your React Vite server: npm run dev.
+
+Open http://localhost:3000 in your browser.
